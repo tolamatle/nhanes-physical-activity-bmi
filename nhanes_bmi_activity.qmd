@@ -1,0 +1,227 @@
+---
+title: "Physical Activity and BMI in NHANES 2011-2012"
+author: "Evelyn Ariceaga"
+format:
+  pdf:
+    toc: false
+    number-sections: false
+    fig-cap-location: bottom
+    geometry: margin=1in
+    fontsize: 10pt
+    documentclass: article
+---
+
+```{r}
+#| message: false
+#| warning: false
+#| echo: false
+
+library(haven)
+library(dplyr)
+library(janitor)
+library(gt)
+library(tidyr)
+library(ggplot2)
+library(stringr)
+library(broom)
+
+# Load NHANES datasets
+pax <- read_xpt("data/PAXDAY_G.xpt")
+bmx <- read_xpt("data/BMX_G.xpt")
+demo <- read_xpt("data/DEMO_G.xpt")
+
+# Compute average daily movement per person
+avg_pax <- pax %>%
+  group_by(SEQN) %>%
+  summarise(avg_paxmtsd = mean(PAXMTSD, na.rm = TRUE))
+
+# Merge all datasets
+merged_data <- avg_pax %>%
+  inner_join(bmx, by = "SEQN") %>%
+  inner_join(demo, by = "SEQN") %>%
+  select(SEQN, avg_paxmtsd, BMXBMI, RIAGENDR, RIDAGEYR, RIDRETH1)
+
+# Final cleaning: remove invalid values
+summary_df <- merged_data %>%
+  filter(
+    !is.na(avg_paxmtsd),
+    !is.na(BMXBMI),
+    RIDAGEYR >= 2 & RIDAGEYR <= 85,
+    BMXBMI >= 10 & BMXBMI <= 70,
+    avg_paxmtsd >= 500 & avg_paxmtsd <= 30000
+  ) %>%
+  mutate(
+    Gender = factor(RIAGENDR, levels = c(1, 2), labels = c("Male", "Female")),
+    Race = case_when(
+      RIDRETH1 == 1 ~ "Mexican American",
+      RIDRETH1 == 2 ~ "Other Hispanic",
+      RIDRETH1 == 3 ~ "Non-Hispanic White",
+      RIDRETH1 == 4 ~ "Non-Hispanic Black",
+      RIDRETH1 == 5 ~ "Other Race",
+      TRUE ~ "Unknown"
+    ),
+    scaled_mims = avg_paxmtsd / 10000
+  )
+```
+
+## Research Question
+
+Is greater daily movement, measured by accelerometer-based MIMS units, associated with lower BMI among U.S. participants aged 2 to 85 in the NHANES 2011–2012 dataset?
+
+## Dataset Description
+
+This analysis uses publicly available data from the 2011–2012 National Health and Nutrition Examination Survey (NHANES), specifically physical activity monitor data (`PAXDAY_G`), anthropometric measurements (`BMX_G`), and demographic variables (`DEMO_G`). Physical activity is measured using Monitor-Independent Movement Summary (MIMS) units derived from wrist accelerometer data. One average daily value was computed per participant.
+
+The datasets were merged by participant ID (`SEQN`), and the analytic sample includes `r nrow(summary_df)` individuals with complete and plausible data.
+
+## Data Cleaning and Quality Checks
+
+To prepare the analytic dataset, we first computed each participant’s average daily physical activity using the `PAXMTSD` variable from the accelerometer data. The physical activity dataset (`PAXDAY_G`) was aggregated at the participant level and then merged with anthropometric (`BMX_G`) and demographic (`DEMO_G`) data using the unique participant identifier (`SEQN`).
+
+From this merged dataset, we applied a series of quality filters to ensure completeness and plausibility in the final analytic sample. Participants were excluded if they met any of the following criteria: - Missing BMI or movement values - Age \<2 or \>85 years - BMI \<10 or \>70 kg/m² - Daily MIMS \<500 or \>30,000 units, which likely indicates non-wear time or device error
+
+These criteria were applied programmatically during the creation of the `summary_df` dataset. Gender was recoded from numeric values (1 = Male, 2 = Female) into labeled categories. Race/ethnicity was recoded into five major groups: Mexican American, Other Hispanic, Non-Hispanic White, Non-Hispanic Black, and Other Race. The movement variable was scaled by 10,000 units to facilitate interpretation of regression coefficients.
+
+Visual inspection of the cleaned data showed a slightly right-skewed distribution in BMI and a roughly symmetric distribution of movement values, supporting the use of linear regression for analysis. All data cleaning and statistical procedures were conducted using R version 4.4.2.
+
+## Results:
+
+```{r}
+#| message: false
+#| warning: false
+#| echo: false
+#| results: 'asis'
+
+# Add MIMS activity categories
+summary_df <- summary_df %>%
+  mutate(
+    mims_category = case_when(
+      avg_paxmtsd < 5000 ~ "Very Low",
+      avg_paxmtsd >= 5000 & avg_paxmtsd < 10000 ~ "Light",
+      avg_paxmtsd >= 10000 & avg_paxmtsd < 20000 ~ "Moderate",
+      avg_paxmtsd >= 20000 ~ "High",
+      TRUE ~ "Unknown"
+    )
+  )
+
+# Create table content with clean indent (no bullets)
+summary_table <- tibble(
+  Variable = c(
+    "Age (years)",
+    "BMI (kg/m²)",
+    "Average Daily Movement¹",
+    "\u00A0\u00A0Very Low (<5,000)",
+    "\u00A0\u00A0Light (5,000–9,999)",
+    "\u00A0\u00A0Moderate (10,000–19,999)",
+    "\u00A0\u00A0High (20,000+)",
+    "Male",
+    "Female"
+  ),
+  Summary = c(
+    paste0(round(mean(summary_df$RIDAGEYR), 1), " ± ", round(sd(summary_df$RIDAGEYR), 1)),
+    paste0(round(mean(summary_df$BMXBMI), 1), " ± ", round(sd(summary_df$BMXBMI), 1)),
+    paste0(round(mean(summary_df$avg_paxmtsd), 1), " ± ", round(sd(summary_df$avg_paxmtsd), 1)),
+    paste0(sum(summary_df$mims_category == "Very Low"), " (", round(mean(summary_df$mims_category == "Very Low")*100, 1), "%)"),
+    paste0(sum(summary_df$mims_category == "Light"), " (", round(mean(summary_df$mims_category == "Light")*100, 1), "%)"),
+    paste0(sum(summary_df$mims_category == "Moderate"), " (", round(mean(summary_df$mims_category == "Moderate")*100, 1), "%)"),
+    paste0(sum(summary_df$mims_category == "High"), " (", round(mean(summary_df$mims_category == "High")*100, 1), "%)"),
+    paste0(sum(summary_df$Gender == "Male"), " (", round(mean(summary_df$Gender == "Male")*100, 1), "%)"),
+    paste0(sum(summary_df$Gender == "Female"), " (", round(mean(summary_df$Gender == "Female")*100, 1), "%)")
+  )
+) %>%
+  gt() %>%
+  tab_header(title = "Table 1. Participant Characteristics of the NHANES 2011–2012 Sample") %>%
+  tab_footnote(
+    footnote = "¹Monitor-Independent Movement Summary units derived from wrist accelerometer data.",
+    locations = cells_body(
+      columns = Variable,
+      rows = Variable == "Average Daily Movement¹"
+    )
+  )
+
+summary_table
+
+
+```
+
+```{r}
+#| echo: false
+#| message: false
+#| warning: false
+#| fig-cap: "Distribution of BMI in the Analytic Sample"
+#| fig-width: 5.5
+#| fig-height: 3.5
+
+ggplot(summary_df, aes(x = BMXBMI)) +
+  geom_histogram(fill = "steelblue", bins = 30, color = "white", alpha = 0.8) +
+  labs(x = "BMI (kg/m²)", y = "Count") +
+  theme_minimal()
+
+```
+
+```{r}
+#| echo: false
+#| message: false
+#| warning: false
+#| fig-cap: "Relationship Between Physical Activity (MIMS) and BMI, Stratified by Gender"
+#| fig-width: 7
+#| fig-height: 5
+
+ggplot(summary_df, aes(x = scaled_mims, y = BMXBMI)) +
+  geom_point(alpha = 0.3, color = "steelblue") +
+  geom_smooth(method = "lm", se = FALSE, color = "darkred") +
+  facet_wrap(~Gender) +
+  labs(x = "Movement (per 10k MIMS)", y = "BMI") +
+  theme_minimal()
+```
+
+```{r}
+#| echo: false
+#| message: false
+#| warning: false
+reg_model <- lm(BMXBMI ~ scaled_mims * Gender + RIDAGEYR + Race, data = summary_df)
+
+reg_table <- tidy(reg_model, conf.int = TRUE) %>%
+  mutate(
+    term = case_when(
+      term == "(Intercept)" ~ "Intercept",
+      term == "scaled_mims" ~ "Movement (per 10k MIMS)",
+      term == "GenderFemale" ~ "Gender: Female",
+      term == "scaled_mims:GenderFemale" ~ "Interaction: Movement x Female",
+      term == "RIDAGEYR" ~ "Age",
+      str_detect(term, "Race") ~ str_replace(term, "Race", "Race: "),
+      TRUE ~ term
+    ),
+    estimate = round(estimate, 4),
+    conf.low = round(conf.low, 4),
+    conf.high = round(conf.high, 4),
+    p.value = format.pval(p.value, digits = 3, eps = .001)
+  ) %>%
+  select(term, estimate, conf.low, conf.high, p.value) %>%
+  gt() %>%
+  tab_header(title = "Table 2. Regression Predicting BMI")
+
+reg_table
+```
+
+Participants in the sample had a mean BMI of `r round(mean(summary_df$BMXBMI, na.rm = TRUE), 1)` kg/m² and an average movement level of `r round(mean(summary_df$avg_paxmtsd, na.rm = TRUE), 1)` MIMS units per day. The histogram (Figure 1) confirms that BMI was moderately right-skewed, with most values falling between 20 and 35 kg/m². The regression model (Table 2) showed that a 10,000-unit increase in MIMS was associated with a BMI decrease of approximately `r round(coef(reg_model)["scaled_mims"], 2)` units (95% CI: `r round(confint(reg_model)["scaled_mims", 1], 2)` to `r round(confint(reg_model)["scaled_mims", 2], 2)`, *p* \< 0.001).Age and gender were also significantly associated with BMI, and the interaction between movement and gender approached significance (*p* = `r format.pval(coef(summary(reg_model))["scaled_mims:GenderFemale", 4], digits = 3)`). These results support the hypothesis that increased physical activity is linked to lower BMI.
+
+## Discussion
+
+In this analysis, higher average daily movement was significantly associated with lower BMI among U.S. participants aged 2 to 85. After adjusting for gender, age, and race/ethnicity, a 10,000-unit increase in MIMS was associated with an estimated BMI decrease of `r round(coef(reg_model)["scaled_mims"], 2)` units (*p* = `r format.pval(summary(reg_model)$coefficients["scaled_mims", 4], digits = 3, eps = 0.001)`). This inverse relationship remained statistically significant even after controlling for demographic covariates.
+
+Female participants had significantly higher BMI than males, with an adjusted difference of `r round(coef(reg_model)["GenderFemale"], 2)` units (*p* \< 0.001). BMI also increased with age, at approximately `r round(coef(reg_model)["RIDAGEYR"], 2)` units per year of age (*p* \< 0.001). The interaction term between movement and female gender did not reach statistical significance (*p* = `r format.pval(summary(reg_model)$coefficients["scaled_mims:GenderFemale", 4], digits = 3, eps = 0.001)`), but stratified plots suggest the inverse association between movement and BMI may be slightly stronger among females. This supports the hypothesis that increased physical activity is protective against higher BMI, even when adjusting for demographic differences.
+
+Overall, the regression showed that every 10,000 MIMS units was associated with a 2.4 unit reduction in BMI (95% CI: -2.97 to -1.84). This is a substantial change, especially for public health considerations in youth and adults alike
+
+## Limitations and Future Directions
+
+This analysis is subject to several limitations. As a cross-sectional dataset, NHANES limits our ability to infer temporal or causal relationships between movement and BMI. While extreme or likely data entry error values were excluded to improve data quality, this step may have removed participants whose values, though unusual, were still valid. Additionally, although MIMS is a standardized metric of movement, it does not capture all forms of physical activity, such as swimming or resistance training, nor does it reflect contextual factors like intensity, motivation, or environment. We also did not account for unmeasured confounders, including diet, comorbid conditions, or socioeconomic stressors.
+
+Future analyses could explore whether the relationship between movement and BMI levels off or changes at certain points by using non-linear models. Stratified or interaction analyses beyond gender—particularly across age and racial/ethnic subgroups—could uncover meaningful heterogeneity.
+
+## Reflection
+
+This project pushed me to think more critically about what it means to “clean” a dataset in a way that is both methodologically sound and analytically defensible. I learned that simple filtering decisions can have ripple effects on sample size, generalizability, and interpretation.
+
+Working through the relationship between movement and BMI challenged me to translate raw accelerometer output into something meaningful and interpretable, both statistically and conceptually. The process of scaling variables, deciding when to include interaction terms, and interpreting coefficients in the context of public health gave me a stronger understanding of how to tell a clear and defensible analytic story.
